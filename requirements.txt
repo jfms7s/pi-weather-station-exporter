@@ -1,0 +1,12 @@
+gpiozero
+prometheus-client
+RPi.GPIO
+Adafruit-PlatformDetect
+Adafruit-BMP
+Adafruit-DHT
+adafruit-circuitpython-bme280
+adafruit-circuitpython-bmp3xx
+adafruit-circuitpython-veml6075
+adafruit-circuitpython-pcf8591
+
+dht11==0.1.0
