@@ -5,10 +5,9 @@ from prometheus_client import start_http_server,Gauge
 import board
 import busio
 import adafruit_veml6075
-import Adafruit_DHT
+import adafruit_dht
 import adafruit_bmp3xx
-import adafruit_bme280
-import Adafruit_BMP.BMP085 as BMP085
+from adafruit_bme280 import basic as adafruit_bme280
 import RPi.GPIO as GPIO
 import itertools
 import threading
@@ -36,7 +35,8 @@ if __name__ == "__main__":
 
     start_http_server(8705)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     i2c = busio.I2C(board.SCL, board.SDA)
     veml = adafruit_veml6075.VEML6075(i2c, integration_time=200)
@@ -83,17 +83,23 @@ if __name__ == "__main__":
 
     ## temperature and pressure
     def scrapeMetrics(DHT_PIN):
-        DHT_SENSOR = Adafruit_DHT.DHT22
+        dht_device = adafruit_dht.DHT22(DHT_PIN)
         temperature_metric = Gauge('temperature', 'temperature in Centigrade')
-        humidity_metric = Gauge('humidity', 'humidity percentage')  
+        humidity_metric = Gauge('humidity', 'humidity percentage')
         while True:
-            humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, DHT_PIN)
+            try:
+                temperature = dht_device.temperature
+                humidity = dht_device.humidity
+            except RuntimeError as error:
+                time.sleep(2)
+                continue
             if humidity is not None and temperature is not None:
                 temperature_metric.set(temperature)
                 humidity_metric.set(humidity)
                 print("Temp={0:0.1f}*C  Humidity={1:0.1f}%".format(temperature, humidity))
+            time.sleep(2)
 
-    loop.run_in_executor(None,scrapeMetrics,19)
+    loop.run_in_executor(None,scrapeMetrics,board.D19)
 
     loop.run_forever()
 
