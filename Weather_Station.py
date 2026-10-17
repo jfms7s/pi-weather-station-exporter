@@ -5,20 +5,10 @@ import itertools
 import logging
 import threading
 import time
+import types
 
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import REGISTRY, Gauge, start_http_server
 
-import board
-import busio
-import adafruit_veml6075
-import adafruit_dht
-import adafruit_bmp3xx
-from adafruit_bme280 import basic as adafruit_bme280
-import RPi.GPIO as GPIO
-import adafruit_pcf8591.pcf8591 as PCF
-from adafruit_pcf8591.analog_in import AnalogIn
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("weather_station")
 
 HTTP_PORT = 8705
@@ -27,7 +17,7 @@ WIND_DIRECTION_PIN = 17
 WIND_DIRECTION_STEPS = 96  # number of rose positions the sensor can report
 PULSES_PER_ROTATION = 40   # anemometer edges (rising + falling) per full rotation
 
-DHT_PIN = board.D19
+DHT_PIN_NAME = "D19"  # attribute of the `board` module, resolved in main()
 DHT_POLL_INTERVAL_SECONDS = 2
 
 BME280_I2C_ADDRESS_DEFAULT = None  # library default
@@ -36,6 +26,32 @@ BMP_PRESSURE_OVERSAMPLING = 8
 BMP_TEMPERATURE_OVERSAMPLING = 2
 
 VEML6075_INTEGRATION_TIME_MS = 200
+
+
+def load_hardware():
+    """Import the hardware driver modules. Kept out of module level so the script
+    can be imported (and tested) on a machine that is not a Raspberry Pi."""
+    import adafruit_bmp3xx
+    import adafruit_dht
+    import adafruit_pcf8591.pcf8591 as PCF
+    import adafruit_veml6075
+    import board
+    import busio
+    from adafruit_bme280 import basic as adafruit_bme280
+    from adafruit_pcf8591.analog_in import AnalogIn
+    from RPi import GPIO
+
+    return types.SimpleNamespace(
+        board=board,
+        busio=busio,
+        adafruit_veml6075=adafruit_veml6075,
+        adafruit_dht=adafruit_dht,
+        adafruit_bmp3xx=adafruit_bmp3xx,
+        adafruit_bme280=adafruit_bme280,
+        GPIO=GPIO,
+        PCF=PCF,
+        AnalogIn=AnalogIn,
+    )
 
 
 class FastWriteCounter:
@@ -56,7 +72,7 @@ class FastWriteCounter:
         return value
 
 
-def safe_gauge(name, documentation, read_fn):
+def safe_gauge(name, documentation, read_fn, registry=REGISTRY):
     """Register a Gauge whose value comes from read_fn, without letting a failing
     sensor read raise inside prometheus_client's collection and break the whole scrape."""
 
@@ -67,54 +83,70 @@ def safe_gauge(name, documentation, read_fn):
             log.warning("failed to read metric %s", name, exc_info=True)
             return float("nan")
 
-    Gauge(name, documentation).set_function(wrapped)
+    Gauge(name, documentation, registry=registry).set_function(wrapped)
 
 
-def register_uv_metrics(veml):
-    safe_gauge("uv_sample_time", "time between samples", lambda: veml.integration_time)
-    safe_gauge("uva_count", "uva count between samples", lambda: veml.uva)
-    safe_gauge("uvb_count", "uvb count between samples", lambda: veml.uvb)
-    safe_gauge("uv_index", "Index UV", lambda: veml.uv_index)
+def register_uv_metrics(veml, registry=REGISTRY):
+    safe_gauge("uv_sample_time", "time between samples", lambda: veml.integration_time,
+               registry=registry)
+    safe_gauge("uva_count", "uva count between samples", lambda: veml.uva,
+               registry=registry)
+    safe_gauge("uvb_count", "uvb count between samples", lambda: veml.uvb,
+               registry=registry)
+    safe_gauge("uv_index", "Index UV", lambda: veml.uv_index,
+               registry=registry)
 
 
-def register_pressure_metrics(i2c):
-    bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
-    bmp = adafruit_bmp3xx.BMP3XX_I2C(i2c, BMP3XX_I2C_ADDRESS)
+def build_pressure_sensors(hw, i2c):
+    bme280 = hw.adafruit_bme280.Adafruit_BME280_I2C(i2c)
+    bmp = hw.adafruit_bmp3xx.BMP3XX_I2C(i2c, BMP3XX_I2C_ADDRESS)
 
     bmp.pressure_oversampling = BMP_PRESSURE_OVERSAMPLING
     bmp.temperature_oversampling = BMP_TEMPERATURE_OVERSAMPLING
-
-    safe_gauge("temperature_bme280", "temperature in Centigrade", lambda: bme280.temperature)
-    safe_gauge("pressure_bme280", "pressure", lambda: bme280.pressure)
-    safe_gauge("humidity_bme280", "humidity", lambda: bme280.humidity)
-
-    safe_gauge("temperature_3xx", "temperature in Centigrade", lambda: bmp.temperature)
-    safe_gauge("pressure_3xx", "pressure", lambda: bmp.pressure)
+    return bme280, bmp
 
 
-def register_wind_metrics(pcf):
-    pcf_in_0 = AnalogIn(pcf, PCF.A0)
-    counter = FastWriteCounter()
+def register_pressure_metrics(bme280, bmp, registry=REGISTRY):
+    safe_gauge("temperature_bme280", "temperature in Centigrade", lambda: bme280.temperature,
+               registry=registry)
+    safe_gauge("pressure_bme280", "pressure", lambda: bme280.pressure,
+               registry=registry)
+    safe_gauge("humidity_bme280", "humidity", lambda: bme280.humidity,
+               registry=registry)
 
-    GPIO.setup(WIND_DIRECTION_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.add_event_detect(WIND_DIRECTION_PIN, GPIO.BOTH, callback=lambda _: counter.increment())
+    safe_gauge("temperature_3xx", "temperature in Centigrade", lambda: bmp.temperature,
+               registry=registry)
+    safe_gauge("pressure_3xx", "pressure", lambda: bmp.pressure,
+               registry=registry)
 
+
+def setup_anemometer(gpio, counter):
+    gpio.setup(WIND_DIRECTION_PIN, gpio.IN, pull_up_down=gpio.PUD_UP)
+    gpio.add_event_detect(WIND_DIRECTION_PIN, gpio.BOTH, callback=lambda _: counter.increment())
+
+
+def register_wind_metrics(vane, counter, registry=REGISTRY):
     safe_gauge("rose_direction", "current rose direction",
-               lambda: (pcf_in_0.value / 65535) * WIND_DIRECTION_STEPS)
+               lambda: (vane.value / 65535) * WIND_DIRECTION_STEPS,
+               registry=registry)
     safe_gauge("rose_power_percentage", "current rose power_percentage",
-               lambda: pcf_in_0.value / 65535)
+               lambda: vane.value / 65535,
+               registry=registry)
     safe_gauge("rose_power", "current rose power",
-               lambda: (pcf_in_0.value / 65535) * pcf_in_0.reference_voltage)
+               lambda: (vane.value / 65535) * vane.reference_voltage,
+               registry=registry)
     safe_gauge("anemometer_rotations", "number of complete rotations since start",
-               lambda: counter.value() / PULSES_PER_ROTATION)
+               lambda: counter.value() / PULSES_PER_ROTATION,
+               registry=registry)
     safe_gauge("anemometer_activation", "number of signals sent by anemometer",
-               lambda: counter.value())
+               lambda: counter.value(),
+               registry=registry)
 
 
-def scrape_dht_metrics(dht_pin):
+def scrape_dht_metrics(adafruit_dht, dht_pin, registry=REGISTRY):
     dht_device = adafruit_dht.DHT22(dht_pin)
-    temperature_metric = Gauge("temperature", "temperature in Centigrade")
-    humidity_metric = Gauge("humidity", "humidity percentage")
+    temperature_metric = Gauge("temperature", "temperature in Centigrade", registry=registry)
+    humidity_metric = Gauge("humidity", "humidity percentage", registry=registry)
 
     while True:
         try:
@@ -138,28 +170,39 @@ def scrape_dht_metrics(dht_pin):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    hw = load_hardware()
+    gpio = hw.GPIO
+
     start_http_server(HTTP_PORT)
     log.info("metrics server listening on :%d", HTTP_PORT)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    i2c = busio.I2C(board.SCL, board.SDA)
-    veml = adafruit_veml6075.VEML6075(i2c, integration_time=VEML6075_INTEGRATION_TIME_MS)
-    pcf = PCF.PCF8591(i2c)
+    i2c = hw.busio.I2C(hw.board.SCL, hw.board.SDA)
+    veml = hw.adafruit_veml6075.VEML6075(i2c, integration_time=VEML6075_INTEGRATION_TIME_MS)
+    pcf = hw.PCF.PCF8591(i2c)
 
-    GPIO.cleanup()
-    GPIO.setmode(GPIO.BCM)
+    gpio.cleanup()
+    gpio.setmode(gpio.BCM)
 
     try:
         register_uv_metrics(veml)
-        register_pressure_metrics(i2c)
-        register_wind_metrics(pcf)
 
-        loop.run_in_executor(None, scrape_dht_metrics, DHT_PIN)
+        bme280, bmp = build_pressure_sensors(hw, i2c)
+        register_pressure_metrics(bme280, bmp)
+
+        vane = hw.AnalogIn(pcf, hw.PCF.A0)
+        counter = FastWriteCounter()
+        setup_anemometer(gpio, counter)
+        register_wind_metrics(vane, counter)
+
+        dht_pin = getattr(hw.board, DHT_PIN_NAME)
+        loop.run_in_executor(None, scrape_dht_metrics, hw.adafruit_dht, dht_pin)
         loop.run_forever()
     finally:
-        GPIO.cleanup()
+        gpio.cleanup()
 
 
 if __name__ == "__main__":
