@@ -155,15 +155,14 @@ def test_scrape_returns_nan_while_the_poll_thread_is_stuck_in_a_read(dht):
 def test_start_dht_poller_wires_the_loop_to_the_exported_state():
     registry = CollectorRegistry()
     polled = threading.Event()
+    stop = threading.Event()
 
     def read():
         polled.set()
         return 21.5, 60.0
 
-    def submit(fn, *args):
-        threading.Thread(target=fn, args=args, daemon=True).start()
-
-    ws.start_dht_poller(submit, registry=registry, read_fn=read)
+    _, thread = ws.start_dht_poller(stop, registry=registry, read_fn=read)
+    assert thread.daemon
 
     assert polled.wait(1)
     deadline = time.monotonic() + 1
@@ -171,3 +170,6 @@ def test_start_dht_poller_wires_the_loop_to_the_exported_state():
         time.sleep(0.01)
     assert registry.get_sample_value("temperature") == 21.5
     assert registry.get_sample_value("humidity") == 60.0
+    stop.set()
+    thread.join(1)
+    assert not thread.is_alive()
