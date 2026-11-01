@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   test:
-    # The Pi is arm, and RPi.GPIO builds from its sdist; the arm runner is free for public repos.
+    # The Pi is arm; the arm runner is free for public repos.
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
@@ -20,6 +20,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Build lgpio
+        # lgpio has no wheel for CPython 3.13+; this is the README's from-source recipe
+        # (on 3.11 pip just takes the wheel), so CI proves the documented steps work.
+        env:
+          PYPI: "1"
+          CFLAGS: "-std=gnu17 -Wno-error=incompatible-pointer-types"
+        run: |
+          pip install setuptools wheel 'swig<4.3'
+          pip install --no-build-isolation lgpio==0.2.2.0
       - name: Install
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint
