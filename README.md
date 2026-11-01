@@ -2,6 +2,39 @@
 
 ## Install
 
+Python 3.11 or newer, on the Pi, as the unprivileged user that will run the exporter.
+
+1. Enable I²C: `sudo raspi-config` → Interface Options → I2C (then reboot).
+2. Install the build prerequisites (some dependencies, such as `sysv_ipc` and, on Python
+   3.13+, `lgpio`, may be built from source):
+   `sudo apt install python3-venv python3-dev build-essential`.
+3. On Python 3.13 and later, build `lgpio` into the virtualenv first (see
+   [GPIO library](#gpio-library-rpi-lgpio) below): `python3 -m venv .venv`, then run that
+   recipe with `.venv/bin/pip` and `PATH=$PWD/.venv/bin:$PATH` (so the `swig` it installs
+   is found).
+4. `make install`. It creates `.venv/` in the checkout and installs the fully pinned,
+   hash-checked set from `requirements.txt` into it (`pip install --require-hashes`).
+
+> [!WARNING]
+> Never `sudo pip install` and never `--break-system-packages`. Both run every package's
+> install-time code as root on a networked device with GPIO and I²C access; the venv
+> needs no root at all.
+
+### Run and smoke check
+
+```sh
+.venv/bin/python Weather_Station.py
+curl -s localhost:8705/metrics | grep -v '^#'
+```
+
+### Updating dependencies
+
+The top-level pins live in `requirements.in`. `requirements.txt` is generated from it: a
+universal lock (every platform and Python 3.11+) with a SHA-256 hash for every package,
+including the transitive ones. To change a version, edit `requirements.in`, run
+`make lock` (needs [`uv`](https://docs.astral.sh/uv/)), and commit both files. Do not
+edit `requirements.txt` by hand.
+
 ### GPIO library: rpi-lgpio
 
 The anemometer is read through the `RPi.GPIO` API, provided by
@@ -28,7 +61,7 @@ the Pi 5.
   pip install setuptools wheel 'swig<4.3'
   PYPI=1 CFLAGS="-std=gnu17 -Wno-error=incompatible-pointer-types" \
     pip install --no-build-isolation lgpio==0.2.2.0
-  pip install -r requirements.txt
+  pip install --require-hashes -r requirements.txt
   ```
 
   The `CFLAGS` let GCC 14 and later compile its C sources (they are written for older C
@@ -41,7 +74,7 @@ remove the old one on its own. In the exporter's existing virtualenv:
 
 ```sh
 pip uninstall -y RPi.GPIO
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 ```
 
 ## DHT22
