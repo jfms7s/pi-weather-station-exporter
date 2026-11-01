@@ -1,8 +1,9 @@
 """Fake hardware modules so Weather_Station can be exercised off a Raspberry Pi.
 
 Every fake records what was done to it in ``EVENTS`` (a list of tuples) and can be
-made to fail: set ``raise_on_init`` on a fake class to make construction raise, or
-put an attribute name in an instance's ``raise_on_read`` to make reading it raise.
+made to fail: set ``raise_on_init`` on a fake class to make construction raise, put an
+attribute name in an instance's ``raise_on_read`` to make reading it raise, or set the
+fake GPIO's ``raise_on_add_event_detect`` to make edge detection setup raise.
 """
 
 import sys
@@ -75,11 +76,14 @@ class FakeGPIO(types.ModuleType):
     def __init__(self):
         super().__init__("RPi.GPIO")
         self.callbacks = {}
+        self.raise_on_add_event_detect = None
 
     def setup(self, pin, mode, pull_up_down=None):
         EVENTS.append(("setup", pin, mode, pull_up_down))
 
     def add_event_detect(self, pin, edge, callback=None):
+        if self.raise_on_add_event_detect is not None:
+            raise self.raise_on_add_event_detect
         EVENTS.append(("add_event_detect", pin, edge))
         self.callbacks[pin] = callback
 

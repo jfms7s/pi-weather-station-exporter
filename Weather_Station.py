@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import functools
 import itertools
 import logging
 import threading
@@ -114,61 +115,123 @@ def safe_gauge(name, documentation, read_fn, registry=REGISTRY):
     Gauge(name, documentation, registry=registry).set_function(wrapped)
 
 
-def register_uv_metrics(veml, registry=REGISTRY):
-    safe_gauge("uv_sample_time", "time between samples", lambda: veml.integration_time,
-               registry=registry)
-    safe_gauge("uva_count", "uva count between samples", lambda: veml.uva,
-               registry=registry)
-    safe_gauge("uvb_count", "uvb count between samples", lambda: veml.uvb,
-               registry=registry)
-    safe_gauge("uv_index", "Index UV", lambda: veml.uv_index,
-               registry=registry)
+# Each physical device is one unit of failure: its gauges, as (name, HELP, read(device)),
+# are registered against the live device, or as NaN when the device can't be built.
+UV_GAUGES = (
+    ("uv_sample_time", "time between samples", lambda veml: veml.integration_time),
+    ("uva_count", "uva count between samples", lambda veml: veml.uva),
+    ("uvb_count", "uvb count between samples", lambda veml: veml.uvb),
+    ("uv_index", "Index UV", lambda veml: veml.uv_index),
+)
+
+BME280_GAUGES = (
+    ("temperature_bme280", "temperature in Centigrade", lambda bme280: bme280.temperature),
+    ("pressure_bme280", "pressure", lambda bme280: bme280.pressure),
+    ("humidity_bme280", "humidity", lambda bme280: bme280.humidity),
+)
+
+BMP3XX_GAUGES = (
+    ("temperature_3xx", "temperature in Centigrade", lambda bmp: bmp.temperature),
+    ("pressure_3xx", "pressure", lambda bmp: bmp.pressure),
+)
+
+WIND_VANE_GAUGES = (
+    ("rose_direction", "current rose direction",
+     lambda vane: (vane.value / 65535) * WIND_DIRECTION_STEPS),
+    ("rose_power_percentage", "current rose power_percentage",
+     lambda vane: vane.value / 65535),
+    ("rose_power", "current rose power",
+     lambda vane: (vane.value / 65535) * vane.reference_voltage),
+)
+
+ANEMOMETER_GAUGES = (
+    ("anemometer_rotations", "number of complete rotations since start",
+     lambda counter: counter.value() / PULSES_PER_ROTATION),
+    ("anemometer_activation", "number of signals sent by anemometer",
+     lambda counter: counter.value()),
+)
 
 
-def build_pressure_sensors(hw, i2c):
-    bme280 = hw.adafruit_bme280.Adafruit_BME280_I2C(i2c)
-    bmp = hw.adafruit_bmp3xx.BMP3XX_I2C(i2c, BMP3XX_I2C_ADDRESS)
+def _report_nan():
+    return float("nan")
 
+
+def start_sensor(name, build, gauges, registry=REGISTRY):
+    """Build one device with `build()` and register its gauges.
+
+    If building it fails (missing device, wrong address, bus error, GPIO refusing edge
+    detection), log one ERROR naming the unit and register its gauges as a constant NaN,
+    which never raises or logs on a scrape, so every other sensor keeps working. Returns
+    the device, or None when it is unavailable. There is no retry: a reseated sensor comes
+    back on the next restart."""
+    try:
+        device = build()
+    except Exception:
+        log.exception("sensor %s unavailable at start-up; its metrics report NaN", name)
+        for metric, documentation, _ in gauges:
+            Gauge(metric, documentation, registry=registry).set_function(_report_nan)
+        return None
+    for metric, documentation, read in gauges:
+        safe_gauge(metric, documentation, functools.partial(read, device), registry=registry)
+    return device
+
+
+def build_i2c(hw):
+    """Open the I2C bus, or return None (logged once) if it can't be opened."""
+    try:
+        return hw.busio.I2C(hw.board.SCL, hw.board.SDA)
+    except Exception:
+        log.exception("I2C bus unavailable at start-up; every I2C sensor reports NaN")
+        return None
+
+
+def _require_i2c(i2c):
+    if i2c is None:
+        raise RuntimeError("I2C bus unavailable")
+    return i2c
+
+
+def build_veml6075(hw, i2c):
+    return hw.adafruit_veml6075.VEML6075(
+        _require_i2c(i2c), integration_time=VEML6075_INTEGRATION_TIME_MS)
+
+
+def build_bme280(hw, i2c):
+    return hw.adafruit_bme280.Adafruit_BME280_I2C(_require_i2c(i2c))
+
+
+def build_bmp3xx(hw, i2c):
+    bmp = hw.adafruit_bmp3xx.BMP3XX_I2C(_require_i2c(i2c), BMP3XX_I2C_ADDRESS)
     bmp.pressure_oversampling = BMP_PRESSURE_OVERSAMPLING
     bmp.temperature_oversampling = BMP_TEMPERATURE_OVERSAMPLING
-    return bme280, bmp
+    return bmp
 
 
-def register_pressure_metrics(bme280, bmp, registry=REGISTRY):
-    safe_gauge("temperature_bme280", "temperature in Centigrade", lambda: bme280.temperature,
-               registry=registry)
-    safe_gauge("pressure_bme280", "pressure", lambda: bme280.pressure,
-               registry=registry)
-    safe_gauge("humidity_bme280", "humidity", lambda: bme280.humidity,
-               registry=registry)
-
-    safe_gauge("temperature_3xx", "temperature in Centigrade", lambda: bmp.temperature,
-               registry=registry)
-    safe_gauge("pressure_3xx", "pressure", lambda: bmp.pressure,
-               registry=registry)
+def build_wind_vane(hw, i2c):
+    pcf = hw.PCF.PCF8591(_require_i2c(i2c))
+    return hw.AnalogIn(pcf, hw.PCF.A0)
 
 
 def setup_anemometer(gpio, counter):
     gpio.setup(WIND_DIRECTION_PIN, gpio.IN, pull_up_down=gpio.PUD_UP)
     gpio.add_event_detect(WIND_DIRECTION_PIN, gpio.BOTH, callback=lambda _: counter.increment())
+    return counter
 
 
-def register_wind_metrics(vane, counter, registry=REGISTRY):
-    safe_gauge("rose_direction", "current rose direction",
-               lambda: (vane.value / 65535) * WIND_DIRECTION_STEPS,
-               registry=registry)
-    safe_gauge("rose_power_percentage", "current rose power_percentage",
-               lambda: vane.value / 65535,
-               registry=registry)
-    safe_gauge("rose_power", "current rose power",
-               lambda: (vane.value / 65535) * vane.reference_voltage,
-               registry=registry)
-    safe_gauge("anemometer_rotations", "number of complete rotations since start",
-               lambda: counter.value() / PULSES_PER_ROTATION,
-               registry=registry)
-    safe_gauge("anemometer_activation", "number of signals sent by anemometer",
-               lambda: counter.value(),
-               registry=registry)
+def start_sensors(hw, gpio, registry=REGISTRY):
+    """Build every GPIO and I2C sensor and register its gauges; one failing at start-up
+    only takes down its own gauges. `gpio.setmode` must already have been called.
+    Returns {unit name: device or None}."""
+    i2c = build_i2c(hw)
+    units = (
+        ("veml6075", lambda: build_veml6075(hw, i2c), UV_GAUGES),
+        ("bme280", lambda: build_bme280(hw, i2c), BME280_GAUGES),
+        ("bmp3xx", lambda: build_bmp3xx(hw, i2c), BMP3XX_GAUGES),
+        ("wind_vane", lambda: build_wind_vane(hw, i2c), WIND_VANE_GAUGES),
+        ("anemometer", lambda: setup_anemometer(gpio, FastWriteCounter()), ANEMOMETER_GAUGES),
+    )
+    return {name: start_sensor(name, build, gauges, registry=registry)
+            for name, build, gauges in units}
 
 
 def find_dht_iio_device(devices_dir=IIO_DEVICES_DIR):
@@ -292,23 +355,11 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    i2c = hw.busio.I2C(hw.board.SCL, hw.board.SDA)
-    veml = hw.adafruit_veml6075.VEML6075(i2c, integration_time=VEML6075_INTEGRATION_TIME_MS)
-    pcf = hw.PCF.PCF8591(i2c)
-
     gpio.cleanup()
     gpio.setmode(gpio.BCM)
 
     try:
-        register_uv_metrics(veml)
-
-        bme280, bmp = build_pressure_sensors(hw, i2c)
-        register_pressure_metrics(bme280, bmp)
-
-        vane = hw.AnalogIn(pcf, hw.PCF.A0)
-        counter = FastWriteCounter()
-        setup_anemometer(gpio, counter)
-        register_wind_metrics(vane, counter)
+        start_sensors(hw, gpio)
 
         start_dht_poller(lambda fn, *args: loop.run_in_executor(None, fn, *args))
         loop.run_forever()

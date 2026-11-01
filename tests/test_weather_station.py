@@ -51,17 +51,8 @@ def hw(monkeypatch):
 
 def test_registers_uv_pressure_and_wind_metrics_with_fake_values(hw):
     registry = CollectorRegistry()
-    i2c = hw.busio.I2C(hw.board.SCL, hw.board.SDA)
-    veml = hw.adafruit_veml6075.VEML6075(i2c, integration_time=ws.VEML6075_INTEGRATION_TIME_MS)
-    pcf = hw.PCF.PCF8591(i2c)
-
-    ws.register_uv_metrics(veml, registry=registry)
-    bme280, bmp = ws.build_pressure_sensors(hw, i2c)
-    ws.register_pressure_metrics(bme280, bmp, registry=registry)
-    vane = hw.AnalogIn(pcf, hw.PCF.A0)
-    counter = ws.FastWriteCounter()
-    ws.setup_anemometer(hw.GPIO, counter)
-    ws.register_wind_metrics(vane, counter, registry=registry)
+    units = ws.start_sensors(hw, hw.GPIO, registry=registry)
+    assert all(device is not None for device in units.values()), units
 
     for _ in range(80):
         hw.GPIO.callbacks[ws.WIND_DIRECTION_PIN](ws.WIND_DIRECTION_PIN)
