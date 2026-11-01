@@ -87,5 +87,5 @@ def test_registers_uv_pressure_and_wind_metrics_with_fake_values(hw):
     assert ("setup", ws.ANEMOMETER_PIN, "IN", "PUD_UP") in hardware_stubs.EVENTS
     assert ("add_event_detect", ws.ANEMOMETER_PIN, "BOTH") in hardware_stubs.EVENTS
     analog_in = [event for event in hardware_stubs.EVENTS if event[0] == "AnalogIn"]
-    assert [event[1][1] for event in analog_in] == [hw.PCF.A0]
+    assert [event[1][1] for event in analog_in] == [hw.pcf8591.A0]
 

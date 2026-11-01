@@ -1,0 +1,10 @@
+# Lint rules for this repo (CI runs `ruff check .`).
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["E", "W", "F", "I", "N", "EXE", "PLR0402", "PLW0108"]
+
+[lint.per-file-ignores]
+# The fakes keep the real drivers' class names (BMP3XX_I2C, Adafruit_BME280_I2C).
+"tests/hardware_stubs.py" = ["N801"]

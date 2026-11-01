@@ -79,11 +79,11 @@ def load_hardware():
     """Import the hardware driver modules. Kept out of module level so the script
     can be imported (and tested) on a machine that is not a Raspberry Pi."""
     import adafruit_bmp3xx
-    import adafruit_pcf8591.pcf8591 as PCF
     import adafruit_veml6075
     import board
     import busio
     from adafruit_bme280 import basic as adafruit_bme280
+    from adafruit_pcf8591 import pcf8591
     from adafruit_pcf8591.analog_in import AnalogIn
     from RPi import GPIO
 
@@ -94,7 +94,7 @@ def load_hardware():
         adafruit_bmp3xx=adafruit_bmp3xx,
         adafruit_bme280=adafruit_bme280,
         GPIO=GPIO,
-        PCF=PCF,
+        pcf8591=pcf8591,
         AnalogIn=AnalogIn,
     )
 
@@ -265,8 +265,8 @@ def build_bmp3xx(hw, i2c):
 
 
 def build_wind_vane(hw, i2c):
-    pcf = hw.PCF.PCF8591(_require_i2c(i2c))
-    return hw.AnalogIn(pcf, getattr(hw.PCF, WIND_VANE_ADC_CHANNEL))
+    pcf = hw.pcf8591.PCF8591(_require_i2c(i2c))
+    return hw.AnalogIn(pcf, getattr(hw.pcf8591, WIND_VANE_ADC_CHANNEL))
 
 
 def setup_anemometer(gpio, counter):
