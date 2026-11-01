@@ -24,6 +24,8 @@ PULSES_PER_ROTATION = 40   # anemometer edges (rising + falling) per full rotati
 IIO_DEVICES_DIR = Path("/sys/bus/iio/devices")
 DHT_IIO_DRIVER_NAME = "dht11"  # the device's `name` is this, or `dht11@<pin in hex>`
 DHT_POLL_INTERVAL_SECONDS = 2
+# After this long without a good read the DHT gauges report NaN instead of the last value.
+DHT_STALE_AFTER_SECONDS = 5 * DHT_POLL_INTERVAL_SECONDS
 
 BME280_I2C_ADDRESS_DEFAULT = None  # library default
 BMP3XX_I2C_ADDRESS = 0x76
@@ -200,26 +202,82 @@ def read_dht(devices_dir=IIO_DEVICES_DIR):
     return read_dht_sysfs(find_dht_iio_device(devices_dir))
 
 
-def scrape_dht_metrics(read_fn=read_dht, registry=REGISTRY):
-    temperature_metric = Gauge("temperature", "temperature in Centigrade", registry=registry)
-    humidity_metric = Gauge("humidity", "humidity percentage", registry=registry)
+class DhtState:
+    """The DHT22's latest good reading, written by the poll thread and read by scrapes."""
 
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.temperature = None
+        self.humidity = None
+        self.last_success_monotonic = None
+        self.last_success_unix = None
+
+
+def poll_dht_once(read_fn, state, monotonic=time.monotonic, wall=time.time):
+    """Read the DHT22 once and record the reading if both values are present.
+
+    Exceptions from read_fn propagate to the caller (the poll loop logs them)."""
+    temperature, humidity = read_fn()
+    if temperature is None or humidity is None:
+        return False
+    with state.lock:
+        state.temperature = temperature
+        state.humidity = humidity
+        state.last_success_monotonic = monotonic()
+        state.last_success_unix = wall()
+    return True
+
+
+def register_dht_metrics(state, registry=REGISTRY, monotonic=time.monotonic):
+    """Export the DHT22 reading as NaN until the first good read and whenever the last good
+    read is older than DHT_STALE_AFTER_SECONDS. Staleness is judged at collection time, so a
+    poll thread stuck inside a read still turns the gauges to NaN.
+
+    Each gauge takes its own snapshot, so within one scrape temperature, humidity and the
+    timestamp can come from adjacent polls; each value on its own is always consistent."""
+
+    def fresh(attribute):
+        def read():
+            with state.lock:
+                last = state.last_success_monotonic
+                value = getattr(state, attribute)
+            if last is None or monotonic() - last > DHT_STALE_AFTER_SECONDS:
+                return float("nan")
+            return value
+
+        return read
+
+    def last_success_unix():
+        with state.lock:
+            last = state.last_success_unix
+        return float("nan") if last is None else last
+
+    Gauge("temperature", "temperature in Centigrade",
+          registry=registry).set_function(fresh("temperature"))
+    Gauge("humidity", "humidity percentage", registry=registry).set_function(fresh("humidity"))
+    Gauge("weather_sensor_last_success_timestamp_seconds",
+          "Unix time of the sensor's last successful read", ["sensor"],
+          registry=registry).labels(sensor="dht22").set_function(last_success_unix)
+
+
+def start_dht_poller(submit, registry=REGISTRY, read_fn=read_dht):
+    """Register the DHT22 gauges and hand their poll loop to `submit(fn, *args)` (an
+    executor). Both get the same DhtState, so what the loop reads is what scrapes see."""
+    state = DhtState()
+    register_dht_metrics(state, registry=registry)
+    submit(scrape_dht_metrics, state, read_fn)
+    return state
+
+
+def scrape_dht_metrics(state, read_fn=read_dht):
     while True:
         try:
-            temperature, humidity = read_fn()
+            if poll_dht_once(read_fn, state):
+                log.info("Temp=%.1f*C Humidity=%.1f%%", state.temperature, state.humidity)
         except OSError as error:
             log.warning("DHT read failed: %s", error)
-            time.sleep(DHT_POLL_INTERVAL_SECONDS)
-            continue
         except Exception:
             log.exception("unexpected error reading DHT sensor")
-            time.sleep(DHT_POLL_INTERVAL_SECONDS)
-            continue
-
-        temperature_metric.set(temperature)
-        humidity_metric.set(humidity)
-        log.info("Temp=%.1f*C Humidity=%.1f%%", temperature, humidity)
-
         time.sleep(DHT_POLL_INTERVAL_SECONDS)
 
 
@@ -252,7 +310,7 @@ def main():
         setup_anemometer(gpio, counter)
         register_wind_metrics(vane, counter)
 
-        loop.run_in_executor(None, scrape_dht_metrics)
+        start_dht_poller(lambda fn, *args: loop.run_in_executor(None, fn, *args))
         loop.run_forever()
     finally:
         gpio.cleanup()
