@@ -27,6 +27,16 @@ Python 3.11 or newer, on the Pi, as the unprivileged user that will run the expo
 curl -s localhost:8705/metrics | grep -v '^#'
 ```
 
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WEATHER_BIND` | `0.0.0.0` | Address the `/metrics` server listens on (for example `127.0.0.1` or the Pi's LAN address). |
+| `WEATHER_PORT` | `8705` | Port for `/metrics`, 0–65535 (`0` picks a free port). An invalid value stops start-up. |
+
+Unset or empty means the default, so an existing install keeps listening on
+`0.0.0.0:8705`. Under systemd, set them with `Environment=`.
+
 ### Updating dependencies
 
 The top-level pins live in `requirements.in`. `requirements.txt` is generated from it: a

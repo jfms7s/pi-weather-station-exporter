@@ -3,6 +3,7 @@
 import functools
 import itertools
 import logging
+import os
 import signal
 import threading
 import time
@@ -13,6 +14,9 @@ from prometheus_client import REGISTRY, Gauge, start_http_server
 
 log = logging.getLogger("weather_station")
 
+# Where /metrics listens. Override with the WEATHER_BIND and WEATHER_PORT environment
+# variables (for example `Environment=` in a systemd unit); unset means these defaults.
+HTTP_BIND = "0.0.0.0"
 HTTP_PORT = 8705
 
 WIND_DIRECTION_PIN = 17
@@ -34,6 +38,23 @@ BMP_PRESSURE_OVERSAMPLING = 8
 BMP_TEMPERATURE_OVERSAMPLING = 2
 
 VEML6075_INTEGRATION_TIME_MS = 200
+
+
+def load_http_config(environ):
+    """Return (bind address, port) for the metrics server from WEATHER_BIND and
+    WEATHER_PORT in `environ`, defaulting to HTTP_BIND and HTTP_PORT. Port 0 picks a free
+    ephemeral port. An invalid port stops start-up with a message naming the variable."""
+    addr = environ.get("WEATHER_BIND", "").strip() or HTTP_BIND
+    raw_port = environ.get("WEATHER_PORT", "").strip()
+    if not raw_port:
+        return addr, HTTP_PORT
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = None
+    if port is None or not 0 <= port <= 65535:
+        raise SystemExit(f"WEATHER_PORT must be an integer from 0 to 65535, got {raw_port!r}")
+    return addr, port
 
 
 def load_hardware():
@@ -378,11 +399,12 @@ def install_stop_handlers(request):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    addr, port = load_http_config(os.environ)
     hw = load_hardware()
     gpio = hw.GPIO
 
-    start_http_server(HTTP_PORT)
-    log.info("metrics server listening on :%d", HTTP_PORT)
+    start_http_server(port, addr=addr)
+    log.info("metrics server listening on %s:%d", addr, port)
 
     gpio.cleanup()
     gpio.setmode(gpio.BCM)
