@@ -29,7 +29,15 @@ PULSES_PER_ROTATION = 40   # anemometer edges (rising + falling) per full rotati
 # Wind vane: analog voltage on a PCF8591 ADC channel (name of the channel constant in the
 # adafruit_pcf8591.pcf8591 module).
 WIND_VANE_ADC_CHANNEL = "A0"
-WIND_DIRECTION_STEPS = 96  # number of rose positions the sensor can report
+# rose_direction is the vane reading on a linear, uncalibrated 0-96 scale, not a rose
+# position the sensor reports.
+WIND_DIRECTION_STEPS = 96
+# The divisor the rose_* gauges use. adafruit_pcf8591's AnalogIn.value is the 8-bit
+# reading shifted left by 8 (analog_in.py:70 in 1.0.25), so it tops out at 255 << 8 =
+# 65280 and a full-scale reading gives 0.996, not 1.0. Kept at 65535 so the exported
+# values stay what they were until the owner decides on 65280 (issue note
+# review-wind-vane-scale-and-duplicated-conversion).
+WIND_VANE_FULL_SCALE = 65535
 
 # DHT22: read through the kernel's `dht11` IIO driver (it handles the DHT22 too),
 # enabled on the Pi with `dtoverlay=dht11,gpiopin=19` (README: DHT22). The kernel does the
@@ -166,13 +174,29 @@ BMP3XX_GAUGES = (
     ("pressure_3xx", "pressure", lambda bmp: bmp.pressure),
 )
 
+def vane_fraction(raw16):
+    """The vane's ADC reading (AnalogIn.value, 16-bit scaled) as a fraction of
+    WIND_VANE_FULL_SCALE."""
+    return raw16 / WIND_VANE_FULL_SCALE
+
+
+def vane_position(fraction):
+    """Linear, uncalibrated position on a 0-WIND_DIRECTION_STEPS scale. A calibration
+    table lookup can replace this later without touching the other conversions."""
+    return fraction * WIND_DIRECTION_STEPS
+
+
+def vane_volts(fraction, reference_voltage):
+    return fraction * reference_voltage
+
+
 WIND_VANE_GAUGES = (
-    ("rose_direction", "current rose direction",
-     lambda vane: (vane.value / 65535) * WIND_DIRECTION_STEPS),
-    ("rose_power_percentage", "current rose power_percentage",
-     lambda vane: vane.value / 65535),
-    ("rose_power", "current rose power",
-     lambda vane: (vane.value / 65535) * vane.reference_voltage),
+    ("rose_direction", "Wind vane position on a linear 0-96 scale (uncalibrated)",
+     lambda vane: vane_position(vane_fraction(vane.value))),
+    ("rose_power_percentage", "Wind vane ADC reading as a fraction of full scale (0-1)",
+     lambda vane: vane_fraction(vane.value)),
+    ("rose_power", "Wind vane ADC reading in volts",
+     lambda vane: vane_volts(vane_fraction(vane.value), vane.reference_voltage)),
 )
 
 ANEMOMETER_GAUGES = (
