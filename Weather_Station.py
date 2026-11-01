@@ -443,7 +443,6 @@ def main():
     start_http_server(port, addr=addr)
     log.info("metrics server listening on %s:%d", addr, port)
 
-    gpio.cleanup()
     gpio.setmode(gpio.BCM)
 
     # Installed only now, right before the try whose finally does the cleanup: a signal
