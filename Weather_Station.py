@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-import asyncio
 import functools
 import itertools
 import logging
+import signal
 import threading
 import time
 import types
@@ -323,17 +323,20 @@ def register_dht_metrics(state, registry=REGISTRY, monotonic=time.monotonic):
           registry=registry).labels(sensor="dht22").set_function(last_success_unix)
 
 
-def start_dht_poller(submit, registry=REGISTRY, read_fn=read_dht):
-    """Register the DHT22 gauges and hand their poll loop to `submit(fn, *args)` (an
-    executor). Both get the same DhtState, so what the loop reads is what scrapes see."""
+def start_dht_poller(stop, registry=REGISTRY, read_fn=read_dht):
+    """Register the DHT22 gauges and start their poll loop on a daemon thread that ends
+    when `stop` is set. Both get the same DhtState, so what the loop reads is what scrapes
+    see. Returns (state, thread)."""
     state = DhtState()
     register_dht_metrics(state, registry=registry)
-    submit(scrape_dht_metrics, state, read_fn)
-    return state
+    thread = threading.Thread(target=scrape_dht_metrics, args=(state, read_fn, stop),
+                              name="dht", daemon=True)
+    thread.start()
+    return state, thread
 
 
-def scrape_dht_metrics(state, read_fn=read_dht):
-    while True:
+def scrape_dht_metrics(state, read_fn, stop):
+    while not stop.is_set():
         try:
             if poll_dht_once(read_fn, state):
                 log.info("Temp=%.1f*C Humidity=%.1f%%", state.temperature, state.humidity)
@@ -341,7 +344,36 @@ def scrape_dht_metrics(state, read_fn=read_dht):
             log.warning("DHT read failed: %s", error)
         except Exception:
             log.exception("unexpected error reading DHT sensor")
-        time.sleep(DHT_POLL_INTERVAL_SECONDS)
+        stop.wait(DHT_POLL_INTERVAL_SECONDS)
+
+
+# How long shutdown waits for the DHT thread to finish a read in progress; it is a daemon
+# thread, so the process exits even if a read is stuck.
+SHUTDOWN_JOIN_SECONDS = 2
+
+
+class StopRequest:
+    """Set by the SIGTERM/SIGINT handler. A plain attribute, not a threading.Event: the
+    handler runs on the main thread between bytecodes, and Event.set() there can deadlock
+    if the main thread was interrupted while holding the Event's internal lock."""
+
+    def __init__(self):
+        self.requested = False
+
+
+# How often main() checks for a stop request; also the worst-case delay before shutdown.
+STOP_POLL_SECONDS = 0.5
+
+
+def install_stop_handlers(request):
+    """Make SIGTERM (what `systemctl stop` sends) and SIGINT (Ctrl-C) mark `request`, so
+    main() leaves its wait and runs the cleanup instead of being killed or raising mid-call."""
+
+    def request_stop(signum, _frame):
+        request.requested = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
 
 
 def main():
@@ -352,19 +384,28 @@ def main():
     start_http_server(HTTP_PORT)
     log.info("metrics server listening on :%d", HTTP_PORT)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     gpio.cleanup()
     gpio.setmode(gpio.BCM)
 
+    # Installed only now, right before the try whose finally does the cleanup: a signal
+    # during the steps above keeps its default action (exit) instead of being deferred.
+    request = StopRequest()
+    install_stop_handlers(request)
+    stop = threading.Event()
+    dht_thread = None
     try:
         start_sensors(hw, gpio)
 
-        start_dht_poller(lambda fn, *args: loop.run_in_executor(None, fn, *args))
-        loop.run_forever()
+        _, dht_thread = start_dht_poller(stop)
+        while not request.requested:
+            time.sleep(STOP_POLL_SECONDS)
+        log.info("stop requested, shutting down")
     finally:
+        stop.set()
+        if dht_thread is not None:
+            dht_thread.join(SHUTDOWN_JOIN_SECONDS)
         gpio.cleanup()
+        log.info("stopped")
 
 
 if __name__ == "__main__":
