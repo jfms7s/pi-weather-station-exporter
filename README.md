@@ -111,3 +111,20 @@ cat /sys/bus/iio/devices/iio:device*/in_temp_input          # milli-degrees Cels
 The exporter finds the device by its driver name, so the `iio:deviceN` number does not
 matter. A failed read (the driver returns `EIO` or `ETIMEDOUT`, which the DHT22 does now
 and then) is logged and retried on the next poll.
+
+## Hardware wiring
+
+As configured in code (`Weather_Station.py`), **not verified on hardware**. Addresses
+marked "driver default" are the defaults of the pinned driver versions in
+`requirements.in`, read from the driver source; the code does not pass an address.
+
+| Instrument | Interface | Pin / channel / address | Source |
+|---|---|---|---|
+| Anemometer | GPIO input, internal pull-up, both edges | BCM 17 | `ANEMOMETER_PIN` |
+| Wind vane | PCF8591 ADC channel | `A0` | `WIND_VANE_ADC_CHANNEL` |
+| DHT22 | kernel `dht11` IIO driver | BCM 19 (`dtoverlay=dht11,gpiopin=19`, see [DHT22](#dht22)) | `/boot/firmware/config.txt` on the Pi |
+| I2C bus | I²C | `board.SCL` / `board.SDA` (bus 1, BCM 3 / BCM 2) | `build_i2c()` |
+| VEML6075 (UV) | I²C | 0x10 (driver default) | `adafruit-circuitpython-veml6075` |
+| PCF8591 (ADC) | I²C | 0x48 (driver default) | `adafruit-circuitpython-pcf8591` |
+| BME280 | I²C | 0x77 (driver default) | `adafruit-circuitpython-bme280` |
+| BMP3xx | I²C | 0x76 | `BMP3XX_I2C_ADDRESS` |
