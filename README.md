@@ -43,3 +43,28 @@ remove the old one on its own. In the exporter's existing virtualenv:
 pip uninstall -y RPi.GPIO
 pip install -r requirements.txt
 ```
+
+## DHT22
+
+The DHT22 is sited apart from the BME280 (so it measures somewhere the BME280 cannot) and
+is read through the kernel's `dht11` IIO driver, which also handles the DHT22. The kernel
+does the bit timing; the exporter only reads two sysfs files, so there is no userspace
+driver or helper process.
+
+Enable the driver on the Pi for the sensor's data pin (BCM 19), then reboot:
+
+```sh
+echo 'dtoverlay=dht11,gpiopin=19' | sudo tee -a /boot/firmware/config.txt
+sudo reboot
+```
+
+After the reboot, check the device is there and reads:
+
+```sh
+grep -H . /sys/bus/iio/devices/*/name                      # one of them is dht11 or dht11@13
+cat /sys/bus/iio/devices/iio:device*/in_temp_input          # milli-degrees Celsius
+```
+
+The exporter finds the device by its driver name, so the `iio:deviceN` number does not
+matter. A failed read (the driver returns `EIO` or `ETIMEDOUT`, which the DHT22 does now
+and then) is logged and retried on the next poll.

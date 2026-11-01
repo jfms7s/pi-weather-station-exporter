@@ -45,10 +45,6 @@ class VEML6075(FakeDevice):
     readings: ClassVar[dict] = {"integration_time": 200, "uva": 11.0, "uvb": 12.0, "uv_index": 1.5}
 
 
-class DHT22(FakeDevice):
-    readings: ClassVar[dict] = {"temperature": 21.5, "humidity": 40.0}
-
-
 class BMP3XX_I2C(FakeDevice):
     readings: ClassVar[dict] = {"temperature": 19.0, "pressure": 1013.0}
 
@@ -109,10 +105,9 @@ def build_modules():
     bme280_basic = _module("adafruit_bme280.basic", Adafruit_BME280_I2C=Adafruit_BME280_I2C)
     rpi = _module("RPi", GPIO=gpio)
     return {
-        "board": _module("board", SCL="SCL", SDA="SDA", D19="D19"),
+        "board": _module("board", SCL="SCL", SDA="SDA"),
         "busio": _module("busio", I2C=I2C),
         "adafruit_veml6075": _module("adafruit_veml6075", VEML6075=VEML6075),
-        "adafruit_dht": _module("adafruit_dht", DHT22=DHT22),
         "adafruit_bmp3xx": _module("adafruit_bmp3xx", BMP3XX_I2C=BMP3XX_I2C),
         "adafruit_bme280": _module("adafruit_bme280", basic=bme280_basic),
         "adafruit_bme280.basic": bme280_basic,

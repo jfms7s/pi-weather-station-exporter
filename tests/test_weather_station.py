@@ -96,6 +96,3 @@ def test_registers_uv_pressure_and_wind_metrics_with_fake_values(hw):
     assert ("setup", ws.WIND_DIRECTION_PIN, "IN", "PUD_UP") in hardware_stubs.EVENTS
     assert ("add_event_detect", ws.WIND_DIRECTION_PIN, "BOTH") in hardware_stubs.EVENTS
 
-
-def test_dht_pin_name_resolves_on_board(hw):
-    assert getattr(hw.board, ws.DHT_PIN_NAME) == "D19"

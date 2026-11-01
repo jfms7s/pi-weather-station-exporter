@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import types
+from pathlib import Path
 
 from prometheus_client import REGISTRY, Gauge, start_http_server
 
@@ -17,7 +18,11 @@ WIND_DIRECTION_PIN = 17
 WIND_DIRECTION_STEPS = 96  # number of rose positions the sensor can report
 PULSES_PER_ROTATION = 40   # anemometer edges (rising + falling) per full rotation
 
-DHT_PIN_NAME = "D19"  # attribute of the `board` module, resolved in main()
+# The DHT22 is read through the kernel's `dht11` IIO driver (it handles the DHT22 too),
+# enabled on the Pi with `dtoverlay=dht11,gpiopin=19` (README: DHT22). The kernel does the
+# bit timing and exposes the reading in sysfs, in milli-degrees Celsius and milli-percent.
+IIO_DEVICES_DIR = Path("/sys/bus/iio/devices")
+DHT_IIO_DRIVER_NAME = "dht11"  # the device's `name` is this, or `dht11@<pin in hex>`
 DHT_POLL_INTERVAL_SECONDS = 2
 
 BME280_I2C_ADDRESS_DEFAULT = None  # library default
@@ -32,7 +37,6 @@ def load_hardware():
     """Import the hardware driver modules. Kept out of module level so the script
     can be imported (and tested) on a machine that is not a Raspberry Pi."""
     import adafruit_bmp3xx
-    import adafruit_dht
     import adafruit_pcf8591.pcf8591 as PCF
     import adafruit_veml6075
     import board
@@ -45,7 +49,6 @@ def load_hardware():
         board=board,
         busio=busio,
         adafruit_veml6075=adafruit_veml6075,
-        adafruit_dht=adafruit_dht,
         adafruit_bmp3xx=adafruit_bmp3xx,
         adafruit_bme280=adafruit_bme280,
         GPIO=GPIO,
@@ -166,16 +169,45 @@ def register_wind_metrics(vane, counter, registry=REGISTRY):
                registry=registry)
 
 
-def scrape_dht_metrics(adafruit_dht, dht_pin, registry=REGISTRY):
-    dht_device = adafruit_dht.DHT22(dht_pin)
+def find_dht_iio_device(devices_dir=IIO_DEVICES_DIR):
+    """Return the sysfs directory of the kernel `dht11` IIO device.
+
+    Found by driver name rather than a fixed `iio:deviceN` path, because N depends on what
+    other IIO devices the Pi has and the order they probe in."""
+    for device in sorted(devices_dir.glob("iio:device*")):
+        try:
+            name = (device / "name").read_text().strip()
+        except OSError:
+            continue
+        if name == DHT_IIO_DRIVER_NAME or name.startswith(DHT_IIO_DRIVER_NAME + "@"):
+            return device
+    raise FileNotFoundError(
+        f"no {DHT_IIO_DRIVER_NAME!r} IIO device under {devices_dir}; "
+        "is dtoverlay=dht11,gpiopin=19 in /boot/firmware/config.txt (README: DHT22)?"
+    )
+
+
+def read_dht_sysfs(device_dir):
+    """Read (temperature in Celsius, relative humidity in percent) from the dht11 IIO device.
+
+    Raises OSError when the driver fails the read (it returns EIO or ETIMEDOUT)."""
+    temperature = int((device_dir / "in_temp_input").read_text()) / 1000
+    humidity = int((device_dir / "in_humidityrelative_input").read_text()) / 1000
+    return temperature, humidity
+
+
+def read_dht(devices_dir=IIO_DEVICES_DIR):
+    return read_dht_sysfs(find_dht_iio_device(devices_dir))
+
+
+def scrape_dht_metrics(read_fn=read_dht, registry=REGISTRY):
     temperature_metric = Gauge("temperature", "temperature in Centigrade", registry=registry)
     humidity_metric = Gauge("humidity", "humidity percentage", registry=registry)
 
     while True:
         try:
-            temperature = dht_device.temperature
-            humidity = dht_device.humidity
-        except RuntimeError as error:
+            temperature, humidity = read_fn()
+        except OSError as error:
             log.warning("DHT read failed: %s", error)
             time.sleep(DHT_POLL_INTERVAL_SECONDS)
             continue
@@ -184,10 +216,9 @@ def scrape_dht_metrics(adafruit_dht, dht_pin, registry=REGISTRY):
             time.sleep(DHT_POLL_INTERVAL_SECONDS)
             continue
 
-        if humidity is not None and temperature is not None:
-            temperature_metric.set(temperature)
-            humidity_metric.set(humidity)
-            log.info("Temp=%.1f*C Humidity=%.1f%%", temperature, humidity)
+        temperature_metric.set(temperature)
+        humidity_metric.set(humidity)
+        log.info("Temp=%.1f*C Humidity=%.1f%%", temperature, humidity)
 
         time.sleep(DHT_POLL_INTERVAL_SECONDS)
 
@@ -221,8 +252,7 @@ def main():
         setup_anemometer(gpio, counter)
         register_wind_metrics(vane, counter)
 
-        dht_pin = getattr(hw.board, DHT_PIN_NAME)
-        loop.run_in_executor(None, scrape_dht_metrics, hw.adafruit_dht, dht_pin)
+        loop.run_in_executor(None, scrape_dht_metrics)
         loop.run_forever()
     finally:
         gpio.cleanup()
