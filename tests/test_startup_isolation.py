@@ -80,7 +80,7 @@ def test_startup_with_i2c_bus_unavailable_keeps_the_anemometer(monkeypatch, hw, 
     assert exposed_names(registry) == ALL_NAMES
     for unit in I2C_UNITS:
         assert all(math.isnan(value) for value in unit_values(registry, unit)), unit
-    hw.GPIO.callbacks[ws.WIND_DIRECTION_PIN](ws.WIND_DIRECTION_PIN)
+    hw.GPIO.callbacks[ws.ANEMOMETER_PIN](ws.ANEMOMETER_PIN)
     assert not any(math.isnan(value) for value in unit_values(registry, "anemometer"))
 
 

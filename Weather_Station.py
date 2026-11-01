@@ -19,11 +19,19 @@ log = logging.getLogger("weather_station")
 HTTP_BIND = "0.0.0.0"
 HTTP_PORT = 8705
 
-WIND_DIRECTION_PIN = 17
-WIND_DIRECTION_STEPS = 96  # number of rose positions the sensor can report
+# Hardware wiring: README "Hardware wiring" lists these; keep the two in step.
+
+# Anemometer: pulse input on a GPIO pin (BCM numbering), internal pull-up, both edges
+# counted.
+ANEMOMETER_PIN = 17
 PULSES_PER_ROTATION = 40   # anemometer edges (rising + falling) per full rotation
 
-# The DHT22 is read through the kernel's `dht11` IIO driver (it handles the DHT22 too),
+# Wind vane: analog voltage on a PCF8591 ADC channel (name of the channel constant in the
+# adafruit_pcf8591.pcf8591 module).
+WIND_VANE_ADC_CHANNEL = "A0"
+WIND_DIRECTION_STEPS = 96  # number of rose positions the sensor can report
+
+# DHT22: read through the kernel's `dht11` IIO driver (it handles the DHT22 too),
 # enabled on the Pi with `dtoverlay=dht11,gpiopin=19` (README: DHT22). The kernel does the
 # bit timing and exposes the reading in sysfs, in milli-degrees Celsius and milli-percent.
 IIO_DEVICES_DIR = Path("/sys/bus/iio/devices")
@@ -32,6 +40,8 @@ DHT_POLL_INTERVAL_SECONDS = 2
 # After this long without a good read the DHT gauges report NaN instead of the last value.
 DHT_STALE_AFTER_SECONDS = 5 * DHT_POLL_INTERVAL_SECONDS
 
+# I2C sensors (bus 1, board.SCL/board.SDA). VEML6075, PCF8591 and BME280 use their
+# drivers' default addresses.
 BME280_I2C_ADDRESS_DEFAULT = None  # library default
 BMP3XX_I2C_ADDRESS = 0x76
 BMP_PRESSURE_OVERSAMPLING = 8
@@ -230,12 +240,12 @@ def build_bmp3xx(hw, i2c):
 
 def build_wind_vane(hw, i2c):
     pcf = hw.PCF.PCF8591(_require_i2c(i2c))
-    return hw.AnalogIn(pcf, hw.PCF.A0)
+    return hw.AnalogIn(pcf, getattr(hw.PCF, WIND_VANE_ADC_CHANNEL))
 
 
 def setup_anemometer(gpio, counter):
-    gpio.setup(WIND_DIRECTION_PIN, gpio.IN, pull_up_down=gpio.PUD_UP)
-    gpio.add_event_detect(WIND_DIRECTION_PIN, gpio.BOTH, callback=lambda _: counter.increment())
+    gpio.setup(ANEMOMETER_PIN, gpio.IN, pull_up_down=gpio.PUD_UP)
+    gpio.add_event_detect(ANEMOMETER_PIN, gpio.BOTH, callback=lambda _: counter.increment())
     return counter
 
 

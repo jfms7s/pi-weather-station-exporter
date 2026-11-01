@@ -55,7 +55,7 @@ def test_registers_uv_pressure_and_wind_metrics_with_fake_values(hw):
     assert all(device is not None for device in units.values()), units
 
     for _ in range(80):
-        hw.GPIO.callbacks[ws.WIND_DIRECTION_PIN](ws.WIND_DIRECTION_PIN)
+        hw.GPIO.callbacks[ws.ANEMOMETER_PIN](ws.ANEMOMETER_PIN)
 
     expected = {
         "uv_sample_time": 200,
@@ -84,6 +84,8 @@ def test_registers_uv_pressure_and_wind_metrics_with_fake_values(hw):
     assert ("BMP3XX_I2C.set", "pressure_oversampling", ws.BMP_PRESSURE_OVERSAMPLING) in (
         hardware_stubs.EVENTS
     )
-    assert ("setup", ws.WIND_DIRECTION_PIN, "IN", "PUD_UP") in hardware_stubs.EVENTS
-    assert ("add_event_detect", ws.WIND_DIRECTION_PIN, "BOTH") in hardware_stubs.EVENTS
+    assert ("setup", ws.ANEMOMETER_PIN, "IN", "PUD_UP") in hardware_stubs.EVENTS
+    assert ("add_event_detect", ws.ANEMOMETER_PIN, "BOTH") in hardware_stubs.EVENTS
+    analog_in = [event for event in hardware_stubs.EVENTS if event[0] == "AnalogIn"]
+    assert [event[1][1] for event in analog_in] == [hw.PCF.A0]
 
