@@ -157,21 +157,23 @@ def safe_gauge(name, documentation, read_fn, registry=REGISTRY):
 # Each physical device is one unit of failure: its gauges, as (name, HELP, read(device)),
 # are registered against the live device, or as NaN when the device can't be built.
 UV_GAUGES = (
-    ("uv_sample_time", "time between samples", lambda veml: veml.integration_time),
-    ("uva_count", "uva count between samples", lambda veml: veml.uva),
-    ("uvb_count", "uvb count between samples", lambda veml: veml.uvb),
-    ("uv_index", "Index UV", lambda veml: veml.uv_index),
+    ("uv_sample_time", "VEML6075 configured integration time in milliseconds",
+     lambda veml: veml.integration_time),
+    ("uva_count", "VEML6075 compensated UVA reading in counts", lambda veml: veml.uva),
+    ("uvb_count", "VEML6075 compensated UVB reading in counts", lambda veml: veml.uvb),
+    ("uv_index", "UV index (VEML6075)", lambda veml: veml.uv_index),
 )
 
 BME280_GAUGES = (
-    ("temperature_bme280", "temperature in Centigrade", lambda bme280: bme280.temperature),
-    ("pressure_bme280", "pressure", lambda bme280: bme280.pressure),
-    ("humidity_bme280", "humidity", lambda bme280: bme280.humidity),
+    ("temperature_bme280", "Temperature in degrees Celsius (BME280)",
+     lambda bme280: bme280.temperature),
+    ("pressure_bme280", "Barometric pressure in hPa (BME280)", lambda bme280: bme280.pressure),
+    ("humidity_bme280", "Relative humidity in percent (BME280)", lambda bme280: bme280.humidity),
 )
 
 BMP3XX_GAUGES = (
-    ("temperature_3xx", "temperature in Centigrade", lambda bmp: bmp.temperature),
-    ("pressure_3xx", "pressure", lambda bmp: bmp.pressure),
+    ("temperature_3xx", "Temperature in degrees Celsius (BMP3xx)", lambda bmp: bmp.temperature),
+    ("pressure_3xx", "Barometric pressure in hPa (BMP3xx)", lambda bmp: bmp.pressure),
 )
 
 def vane_fraction(raw16):
@@ -200,9 +202,9 @@ WIND_VANE_GAUGES = (
 )
 
 ANEMOMETER_GAUGES = (
-    ("anemometer_rotations", "number of complete rotations since start",
+    ("anemometer_rotations", "Anemometer rotations since start, fractional (pulses / 40)",
      lambda counter: counter.value() / PULSES_PER_ROTATION),
-    ("anemometer_activation", "number of signals sent by anemometer",
+    ("anemometer_activation", "Anemometer pulses (rising and falling edges) since start",
      lambda counter: counter.value()),
 )
 
@@ -370,9 +372,10 @@ def register_dht_metrics(state, registry=REGISTRY, monotonic=time.monotonic):
             last = state.last_success_unix
         return float("nan") if last is None else last
 
-    Gauge("temperature", "temperature in Centigrade",
+    Gauge("temperature", "Temperature in degrees Celsius (DHT22)",
           registry=registry).set_function(fresh("temperature"))
-    Gauge("humidity", "humidity percentage", registry=registry).set_function(fresh("humidity"))
+    Gauge("humidity", "Relative humidity in percent (DHT22)",
+          registry=registry).set_function(fresh("humidity"))
     Gauge("weather_sensor_last_success_timestamp_seconds",
           "Unix time of the sensor's last successful read", ["sensor"],
           registry=registry).labels(sensor="dht22").set_function(last_success_unix)
