@@ -74,14 +74,37 @@ class FastWriteCounter:
 
 def safe_gauge(name, documentation, read_fn, registry=REGISTRY):
     """Register a Gauge whose value comes from read_fn, without letting a failing
-    sensor read raise inside prometheus_client's collection and break the whole scrape."""
+    sensor read raise inside prometheus_client's collection and break the whole scrape.
+
+    A read that keeps failing logs one WARNING (with traceback) when it starts failing and
+    one INFO line when it recovers, however many scrapes hit it in between: scrapes run on
+    request threads, so per-request logging would let any client flood the journal. A
+    sensor that flaps between failing and working still logs on every transition; moving
+    reads out of the scrape (a sampler thread) is what bounds that.
+
+    State changes are logged while holding the lock, so the log order always matches the
+    order of the transitions (the last line says the state the gauge is in)."""
+    failing = False
+    state_lock = threading.Lock()
 
     def wrapped():
+        nonlocal failing
         try:
-            return read_fn()
+            value = read_fn()
         except Exception:
-            log.warning("failed to read metric %s", name, exc_info=True)
+            with state_lock:
+                if not failing:
+                    failing = True
+                    log.warning("metric %s read failed; reporting NaN until it recovers",
+                                name, exc_info=True)
+                    return float("nan")
+            log.debug("metric %s read still failing", name)
             return float("nan")
+        with state_lock:
+            if failing:
+                failing = False
+                log.info("metric %s recovered", name)
+        return value
 
     Gauge(name, documentation, registry=registry).set_function(wrapped)
 
