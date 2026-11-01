@@ -16,7 +16,7 @@ os.environ["WEATHER_PORT"] = "0"  # ephemeral, so parallel runs never collide
 modules = hardware_stubs.install()
 modules["RPi.GPIO"].cleanup = lambda: print("cleanup", flush=True)
 
-import Weather_Station as ws
+import Weather_Station as ws  # noqa: E402 (after the fakes are installed)
 
 start_dht_poller = ws.start_dht_poller
 

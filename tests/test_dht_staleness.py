@@ -112,8 +112,8 @@ def test_dht_gauges_keep_names_and_help():
     ws.register_dht_metrics(ws.DhtState(), registry=registry)
     docs = {metric.name: metric.documentation for metric in registry.collect()}
 
-    assert docs["temperature"] == "temperature in Centigrade"
-    assert docs["humidity"] == "humidity percentage"
+    assert docs["temperature"] == "Temperature in degrees Celsius (DHT22)"
+    assert docs["humidity"] == "Relative humidity in percent (DHT22)"
     assert TIMESTAMP in docs
 
 
