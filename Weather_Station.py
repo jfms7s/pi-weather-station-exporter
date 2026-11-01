@@ -231,7 +231,10 @@ def poll_dht_once(read_fn, state, monotonic=time.monotonic, wall=time.time):
 def register_dht_metrics(state, registry=REGISTRY, monotonic=time.monotonic):
     """Export the DHT22 reading as NaN until the first good read and whenever the last good
     read is older than DHT_STALE_AFTER_SECONDS. Staleness is judged at collection time, so a
-    poll thread stuck inside a read still turns the gauges to NaN."""
+    poll thread stuck inside a read still turns the gauges to NaN.
+
+    Each gauge takes its own snapshot, so within one scrape temperature, humidity and the
+    timestamp can come from adjacent polls; each value on its own is always consistent."""
 
     def fresh(attribute):
         def read():
@@ -255,6 +258,15 @@ def register_dht_metrics(state, registry=REGISTRY, monotonic=time.monotonic):
     Gauge("weather_sensor_last_success_timestamp_seconds",
           "Unix time of the sensor's last successful read", ["sensor"],
           registry=registry).labels(sensor="dht22").set_function(last_success_unix)
+
+
+def start_dht_poller(submit, registry=REGISTRY, read_fn=read_dht):
+    """Register the DHT22 gauges and hand their poll loop to `submit(fn, *args)` (an
+    executor). Both get the same DhtState, so what the loop reads is what scrapes see."""
+    state = DhtState()
+    register_dht_metrics(state, registry=registry)
+    submit(scrape_dht_metrics, state, read_fn)
+    return state
 
 
 def scrape_dht_metrics(state, read_fn=read_dht):
@@ -298,9 +310,7 @@ def main():
         setup_anemometer(gpio, counter)
         register_wind_metrics(vane, counter)
 
-        dht_state = DhtState()
-        register_dht_metrics(dht_state)
-        loop.run_in_executor(None, scrape_dht_metrics, dht_state)
+        start_dht_poller(lambda fn, *args: loop.run_in_executor(None, fn, *args))
         loop.run_forever()
     finally:
         gpio.cleanup()
