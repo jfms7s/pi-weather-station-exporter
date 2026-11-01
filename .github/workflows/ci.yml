@@ -30,7 +30,11 @@ jobs:
           pip install setuptools wheel 'swig<4.3'
           pip install --no-build-isolation lgpio==0.2.2.0
       - name: Install
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        # requirements.txt is hash-locked; the dev tools are installed in a separate,
+        # unhashed step (one pip run with any hashed line requires hashes everywhere).
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check .
       - name: Test
