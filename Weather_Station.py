@@ -440,9 +440,6 @@ def main():
     hw = load_hardware()
     gpio = hw.GPIO
 
-    start_http_server(port, addr=addr)
-    log.info("metrics server listening on %s:%d", addr, port)
-
     gpio.setmode(gpio.BCM)
 
     # Installed only now, right before the try whose finally does the cleanup: a signal
@@ -455,6 +452,10 @@ def main():
         start_sensors(hw, gpio)
 
         _, dht_thread = start_dht_poller(stop)
+        # Open /metrics only once every gauge is registered, so the first scrape already
+        # sees the full set.
+        start_http_server(port, addr=addr)
+        log.info("metrics server listening on %s:%d", addr, port)
         while not request.requested:
             time.sleep(STOP_POLL_SECONDS)
         log.info("stop requested, shutting down")
