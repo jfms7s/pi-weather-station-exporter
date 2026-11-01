@@ -335,8 +335,7 @@ def start_dht_poller(stop, registry=REGISTRY, read_fn=read_dht):
     return state, thread
 
 
-def scrape_dht_metrics(state, read_fn=read_dht, stop=None):
-    stop = stop if stop is not None else threading.Event()
+def scrape_dht_metrics(state, read_fn, stop):
     while not stop.is_set():
         try:
             if poll_dht_once(read_fn, state):
@@ -353,13 +352,25 @@ def scrape_dht_metrics(state, read_fn=read_dht, stop=None):
 SHUTDOWN_JOIN_SECONDS = 2
 
 
-def install_stop_handlers(stop):
-    """Make SIGTERM (what `systemctl stop` sends) and SIGINT (Ctrl-C) set `stop`, so main()
-    leaves its wait and runs the cleanup instead of being killed or raising mid-call."""
+class StopRequest:
+    """Set by the SIGTERM/SIGINT handler. A plain attribute, not a threading.Event: the
+    handler runs on the main thread between bytecodes, and Event.set() there can deadlock
+    if the main thread was interrupted while holding the Event's internal lock."""
+
+    def __init__(self):
+        self.requested = False
+
+
+# How often main() checks for a stop request; also the worst-case delay before shutdown.
+STOP_POLL_SECONDS = 0.5
+
+
+def install_stop_handlers(request):
+    """Make SIGTERM (what `systemctl stop` sends) and SIGINT (Ctrl-C) mark `request`, so
+    main() leaves its wait and runs the cleanup instead of being killed or raising mid-call."""
 
     def request_stop(signum, _frame):
-        log.info("received %s, shutting down", signal.Signals(signum).name)
-        stop.set()
+        request.requested = True
 
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
@@ -367,8 +378,6 @@ def install_stop_handlers(stop):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    stop = threading.Event()
-    install_stop_handlers(stop)
     hw = load_hardware()
     gpio = hw.GPIO
 
@@ -378,15 +387,19 @@ def main():
     gpio.cleanup()
     gpio.setmode(gpio.BCM)
 
+    # Installed only now, right before the try whose finally does the cleanup: a signal
+    # during the steps above keeps its default action (exit) instead of being deferred.
+    request = StopRequest()
+    install_stop_handlers(request)
+    stop = threading.Event()
     dht_thread = None
     try:
         start_sensors(hw, gpio)
 
         _, dht_thread = start_dht_poller(stop)
-        # A timed wait so the main thread wakes regularly even if a signal arrives
-        # while it is blocked.
-        while not stop.wait(1):
-            pass
+        while not request.requested:
+            time.sleep(STOP_POLL_SECONDS)
+        log.info("stop requested, shutting down")
     finally:
         stop.set()
         if dht_thread is not None:
